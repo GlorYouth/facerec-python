@@ -66,6 +66,14 @@ class WebServer:
         self.port = self.config.get('web_interface.port', 8080)
         self.server_thread = None
         
+        # 视频流优化
+        self.streaming_fps = self.config.get('web_interface.streaming_fps', 10)
+        self.streaming_interval = 1.0 / self.streaming_fps if self.streaming_fps > 0 else 0.1
+        self.streaming_thread = None
+        self.is_streaming = False
+        self.latest_jpeg_frame = None
+        self.jpeg_frame_lock = threading.Lock()
+        
     def _setup_routes(self) -> None:
         """设置Flask路由"""
         # 主页
@@ -189,36 +197,52 @@ class WebServer:
                 
             return jsonify(images)
         
-    def _generate_frames(self):
-        """生成视频流的帧序列"""
+    def _jpeg_encoder_thread(self):
+        """后台线程，用于将视频帧编码为JPEG，以降低主线程和请求线程的CPU占用"""
         import cv2
+        logging.info("视频帧编码器线程已启动")
         
-        while True:
+        while self.is_streaming:
             # 获取最新帧
             frame = self.monitor.get_latest_frame()
             
-            # 如果没有帧，等待一下再试
             if frame is None:
-                time.sleep(0.1)
+                time.sleep(0.1)  # 等待有效帧
                 continue
                 
-            # 检测人脸
+            # 如果监控活动，获取带有人脸框的图像
             if self.monitor.is_active():
-                # 获取最新的检测结果
                 marked_frame, _ = self.monitor.get_latest_detection()
                 if marked_frame is not None:
                     frame = marked_frame
                     
-            # 编码为JPEG
-            ret, buffer = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            frame_bytes = buffer.tobytes()
+            # 设置JPEG编码质量，降低码率和CPU消耗
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
+            ret, buffer = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), encode_param)
             
-            # 发送到浏览器
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                   
-            # 控制帧率
-            time.sleep(0.03)  # 约30 FPS
+            if ret:
+                frame_bytes = buffer.tobytes()
+                # 线程安全地更新最新帧
+                with self.jpeg_frame_lock:
+                    self.latest_jpeg_frame = frame_bytes
+
+            # 控制编码帧率，使用配置文件中的设定
+            time.sleep(self.streaming_interval)
+            
+        logging.info("视频帧编码器线程已停止")
+
+    def _generate_frames(self):
+        """从缓存中读取已编码的帧，并作为视频流发送"""
+        while True:
+            # 等待下一帧的生成
+            time.sleep(self.streaming_interval)
+            
+            with self.jpeg_frame_lock:
+                frame_bytes = self.latest_jpeg_frame
+            
+            if frame_bytes:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             
     def start(self, debug: bool = False) -> None:
         """
@@ -231,7 +255,13 @@ class WebServer:
             # 直接运行（调试模式）
             self.app.run(host=self.host, port=self.port, debug=True)
         else:
-            # 在后台线程运行
+            # 启动视频流编码线程
+            self.is_streaming = True
+            self.streaming_thread = threading.Thread(target=self._jpeg_encoder_thread)
+            self.streaming_thread.daemon = True
+            self.streaming_thread.start()
+            
+            # 在后台线程运行Flask服务
             self.server_thread = threading.Thread(
                 target=lambda: self.app.run(
                     host=self.host, 
@@ -245,7 +275,12 @@ class WebServer:
             logging.info(f"Web服务器已启动，地址: http://{self.host}:{self.port}")
             
     def stop(self) -> None:
-        """停止Web服务器"""
+        """停止Web服务器和视频流编码线程"""
+        # 停止视频流编码线程
+        self.is_streaming = False
+        if self.streaming_thread and self.streaming_thread.is_alive():
+            self.streaming_thread.join(1.0) # 等待线程优雅退出
+
         # Flask没有优雅的停止方法，我们在多线程模式下使用的是守护线程
-        # 当主程序退出时，线程将自动终止
+        # 当主程序退出时，Flask线程将自动终止
         logging.info("Web服务器已停止") 
