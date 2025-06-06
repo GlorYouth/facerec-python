@@ -27,7 +27,7 @@ face_recognition:
   # 检测阈值（越小越严格）
   tolerance: 0.6
   # 是否保存检测到的未知人脸
-  save_unknown_faces: true
+  save_unknown_faces: false
   unknown_faces_dir: "./data/unknown_faces"
   # 每秒检测帧数（可低于摄像头帧率以减少CPU占用）
   detection_fps: 5
@@ -39,17 +39,17 @@ monitoring:
   # 是否启用运动检测前置过滤
   enable_motion_detection: true
   # 运动检测灵敏度 (1-100)
-  motion_sensitivity: 50
+  motion_sensitivity: 20
   # 运动检测帧率（可低于摄像头帧率以降低CPU占用）
   motion_detection_fps: 5
   # 是否记录所有检测事件
-  log_all_detections: true
+  log_all_detections: false
   # 日志文件路径
   log_file: "./logs/detections.log"
   # 检测到人脸后的动作
   actions:
     # 是否保存图片
-    save_image: true
+    save_image: false
     # 图片保存位置
     images_dir: "./data/detected_images"
     # 是否发送通知
