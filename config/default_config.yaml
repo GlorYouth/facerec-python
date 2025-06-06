@@ -48,6 +48,10 @@ face_tracking:
   smoothing_factor: 0.3
   # 最小检测框面积，小于此值的检测框将被忽略
   min_detection_area: 1000
+  # 人脸验证的置信度阈值
+  confidence_threshold: 0.8
+  # 最小人脸宽高比例阈值
+  min_face_ratio: 0.4
 
 # 监控配置
 monitoring:
@@ -101,4 +105,19 @@ qt_interface:
   # 是否启用Qt界面
   enabled: false
   # 主题 (light, dark)
-  theme: "dark" 
+  theme: "dark"
+
+# 检测配置
+detection:
+  detection_fps: 5  # 检测帧率
+  min_face_size: 20  # 最小人脸尺寸
+  scale_factor: 1.1  # 图像金字塔缩放因子
+  min_neighbors: 5  # 最小邻居数
+  detection_interval: 0.2  # 检测间隔（秒）
+
+# 日志配置
+logging:
+  level: INFO
+  file: logs/facerec.log
+  max_size: 10485760  # 10MB
+  backup_count: 5 

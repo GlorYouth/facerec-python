@@ -113,14 +113,20 @@ class FaceMonitor:
             )
             
             # 创建人脸跟踪器
-            max_disappeared = self.config.get('face_tracking.max_disappeared', 30)
+            max_disappeared = self.config.get('face_tracking.max_disappeared', 50)
             min_distance = self.config.get('face_tracking.min_distance', 0.6)
             min_iou = self.config.get('face_tracking.min_iou', 0.3)
+            overlap_threshold = self.config.get('face_tracking.overlap_threshold', 0.5)
+            smoothing_factor = self.config.get('face_tracking.smoothing_factor', 0.3)
+            min_detection_area = self.config.get('face_tracking.min_detection_area', 1000)
             
             self.face_tracker = FaceTracker(
                 max_disappeared=max_disappeared,
                 min_distance=min_distance,
-                min_iou=min_iou
+                min_iou=min_iou,
+                overlap_threshold=overlap_threshold,
+                smoothing_factor=smoothing_factor,
+                min_detection_area=min_detection_area
             )
             
         except Exception as e:

@@ -9,12 +9,17 @@ import sys
 import logging
 import signal
 import time
-from typing import Optional
+from typing import Optional, Dict, Any
+from pathlib import Path
+import yaml
 
 from config.config_manager import ConfigManager
 from monitor.monitor import FaceMonitor
 from interface.web.web_server import WebServer
 from utils.file_writer import FileWriter
+from face import FaceTracker
+from monitor import FaceMonitor
+from utils.logger import setup_logger
 
 
 class Application:
@@ -160,7 +165,61 @@ class Application:
         logging.info("应用程序已停止")
         
 
+def load_config() -> Dict[str, Any]:
+    """加载配置文件"""
+    config_path = Path("config/default_config.yaml")
+    with open(config_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+def main():
+    # 加载配置
+    config = load_config()
+    
+    # 设置日志
+    setup_logger(
+        level=config["logging"]["level"],
+        filename=config["logging"]["file"],
+        max_bytes=config["logging"]["max_size"],
+        backup_count=config["logging"]["backup_count"]
+    )
+    
+    # 初始化人脸跟踪器
+    face_tracker = FaceTracker(
+        max_disappeared=config["face_tracking"]["max_disappeared"],
+        min_distance=config["face_tracking"]["min_distance"],
+        min_iou=config["face_tracking"]["min_iou"],
+        overlap_threshold=config["face_tracking"]["overlap_threshold"],
+        smoothing_factor=config["face_tracking"]["smoothing_factor"],
+        min_detection_area=config["face_tracking"]["min_detection_area"],
+        confidence_threshold=config["face_tracking"]["confidence_threshold"],
+        min_face_ratio=config["face_tracking"]["min_face_ratio"]
+    )
+    
+    # 初始化监控器
+    monitor = Monitor(
+        face_tracker=face_tracker,
+        detection_fps=config["detection"]["detection_fps"],
+        min_face_size=config["detection"]["min_face_size"],
+        scale_factor=config["detection"]["scale_factor"],
+        min_neighbors=config["detection"]["min_neighbors"],
+        detection_interval=config["detection"]["detection_interval"]
+    )
+    
+    try:
+        # 启动监控
+        monitor.start()
+        
+    except KeyboardInterrupt:
+        logging.info("程序被用户中断")
+        monitor.stop()
+        
+    except Exception as e:
+        logging.error(f"程序发生错误: {e}")
+        monitor.stop()
+        raise
+
 if __name__ == "__main__":
     # 创建并运行应用程序
     app = Application()
-    app.run() 
+    app.run()
+    main() 

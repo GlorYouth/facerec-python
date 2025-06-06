@@ -7,6 +7,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 import time
 import logging
+import cv2
 
 
 class FaceTracker:
@@ -20,7 +21,8 @@ class FaceTracker:
         overlap_threshold: float = 0.5,
         smoothing_factor: float = 0.3,
         min_detection_area: int = 1000,
-        unknown_face_threshold: float = 0.5  # 未知人脸特征相似度阈值
+        confidence_threshold: float = 0.8,
+        min_face_ratio: float = 0.4
     ):
         """
         初始化人脸跟踪器
@@ -32,7 +34,8 @@ class FaceTracker:
             overlap_threshold: 重叠框过滤阈值，两个框的IOU大于此值时视为重叠
             smoothing_factor: 跟踪结果平滑因子，0表示不平滑，1表示完全使用历史位置
             min_detection_area: 最小检测框面积，小于此值的检测框将被忽略
-            unknown_face_threshold: 未知人脸特征相似度阈值，小于此值认为是同一个人
+            confidence_threshold: 人脸验证的置信度阈值
+            min_face_ratio: 最小人脸宽高比例阈值
         """
         self.max_disappeared = max_disappeared
         self.min_distance = min_distance
@@ -40,22 +43,21 @@ class FaceTracker:
         self.overlap_threshold = overlap_threshold
         self.smoothing_factor = smoothing_factor
         self.min_detection_area = min_detection_area
-        self.unknown_face_threshold = unknown_face_threshold
+        self.confidence_threshold = confidence_threshold
+        self.min_face_ratio = min_face_ratio
         
         # 下一个可用的对象ID
         self.next_object_id = 0
         
-        # 跟踪的人脸对象字典 {object_id: {bbox, name, encoding, disappeared_count, last_time, age}}
+        # 跟踪的人脸对象字典 {object_id: {bbox, name, encoding, disappeared_count, last_time, age, confidence}}
         self.tracked_faces = {}
         
         # 记录上一次的检测框，用于非匹配检测的处理
         self.previous_detections = []
         
-        # 未知人脸特征库 {unknown_id: List[encoding]}
-        self.unknown_face_features = {}
-        
-        # 未知人脸ID计数器
-        self.next_unknown_id = 1
+        # 加载人脸特征点检测器
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
         
         logging.info("人脸跟踪器已初始化")
     
@@ -365,106 +367,144 @@ class FaceTracker:
         
         return matched_tracks, unmatched_detections
     
-    def _find_similar_unknown_face(self, encoding: np.ndarray) -> Optional[str]:
+    def _verify_face(self, frame: np.ndarray, bbox: Tuple) -> Tuple[bool, float]:
         """
-        在未知人脸特征库中查找相似的人脸
+        验证检测到的区域是否真的是人脸
         
         Args:
-            encoding: 人脸特征向量
+            frame: 完整的图像帧
+            bbox: 边界框坐标 (top, right, bottom, left)
             
         Returns:
-            如果找到相似的未知人脸，返回其ID（格式为"Unknown_N"），否则返回None
+            (是否是人脸, 置信度)
         """
-        if encoding is None:
-            return None
+        try:
+            # 提取人脸区域
+            top, right, bottom, left = bbox
+            face_region = frame[top:bottom, left:right]
             
-        for unknown_id, feature_list in self.unknown_face_features.items():
-            # 计算与该未知ID下所有特征向量的平均距离
-            distances = [self._calculate_feature_distance(encoding, feat) for feat in feature_list]
-            avg_distance = np.mean(distances)
+            if face_region.size == 0:
+                return False, 0.0
             
-            # 如果平均距离小于阈值，认为是同一个人
-            if avg_distance < self.unknown_face_threshold:
-                # 将新的特征向量添加到特征库中（最多保留10个特征）
-                if len(feature_list) < 10:
-                    feature_list.append(encoding)
-                return unknown_id
-                
-        return None
-        
-    def _create_new_unknown_id(self, encoding: np.ndarray) -> str:
+            # 转换为灰度图
+            gray = cv2.cvtColor(face_region, cv2.COLOR_BGR2GRAY)
+            
+            # 检查人脸区域的宽高比
+            height, width = face_region.shape[:2]
+            face_ratio = min(width, height) / max(width, height)
+            if face_ratio < self.min_face_ratio:
+                return False, 0.0
+            
+            # 在人脸区域内检测眼睛
+            eyes = self.eye_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+            
+            # 计算置信度得分
+            confidence = 0.0
+            
+            # 如果检测到眼睛，增加置信度
+            if len(eyes) >= 2:
+                confidence += 0.6
+            elif len(eyes) == 1:
+                confidence += 0.3
+            
+            # 检查人脸区域的纹理特征
+            texture_score = self._calculate_texture_score(gray)
+            confidence += texture_score * 0.4
+            
+            # 如果置信度超过阈值，认为是人脸
+            return confidence >= self.confidence_threshold, confidence
+            
+        except Exception as e:
+            logging.error(f"人脸验证失败: {e}")
+            return False, 0.0
+    
+    def _calculate_texture_score(self, gray_face: np.ndarray) -> float:
         """
-        创建新的未知人脸ID并保存其特征
+        计算人脸区域的纹理特征得分
         
         Args:
-            encoding: 人脸特征向量
+            gray_face: 灰度人脸图像
             
         Returns:
-            新的未知人脸ID（格式为"Unknown_N"）
+            纹理得分 (0-1)
         """
-        unknown_id = f"Unknown_{self.next_unknown_id}"
-        self.unknown_face_features[unknown_id] = [encoding] if encoding is not None else []
-        self.next_unknown_id += 1
-        return unknown_id
-        
+        try:
+            # 计算Sobel边缘
+            sobelx = cv2.Sobel(gray_face, cv2.CV_64F, 1, 0, ksize=3)
+            sobely = cv2.Sobel(gray_face, cv2.CV_64F, 0, 1, ksize=3)
+            
+            # 计算梯度幅值
+            magnitude = np.sqrt(sobelx**2 + sobely**2)
+            
+            # 计算平均梯度强度
+            mean_gradient = np.mean(magnitude)
+            
+            # 将梯度强度归一化到0-1范围
+            # 经验值：人脸通常有较强的边缘特征
+            score = min(1.0, mean_gradient / 50.0)
+            
+            return score
+            
+        except Exception as e:
+            logging.error(f"计算纹理得分失败: {e}")
+            return 0.0
+    
     def _should_create_new_track(
         self, 
-        detection: Tuple[Tuple[int, int, int, int], str, Optional[np.ndarray]]
-    ) -> Tuple[bool, Optional[str]]:
+        detection: Tuple[Tuple[int, int, int, int], str, Optional[np.ndarray]],
+        frame: Optional[np.ndarray] = None
+    ) -> bool:
         """
-        决定是否为未匹配的检测创建新的跟踪目标，并处理未知人脸的ID分配
+        决定是否为未匹配的检测创建新的跟踪目标
         
         Args:
             detection: 检测结果 (bbox, name, encoding)
+            frame: 当前帧图像，用于人脸验证
             
         Returns:
-            (是否应该创建新的跟踪目标, 建议使用的名称)
+            是否应该创建新的跟踪目标
         """
-        bbox, name, encoding = detection
+        bbox, name, _ = detection
         
         # 检查与现有跟踪目标的IOU，防止在同一位置创建多个跟踪目标
         for track_info in self.tracked_faces.values():
             iou = self._calculate_iou(bbox, track_info['bbox'])
             if iou > 0.4:  # 使用较低的阈值
-                return False, None
+                return False
         
         # 检查与前一帧所有检测的IOU
         for prev_bbox, _, _ in self.previous_detections:
             iou = self._calculate_iou(bbox, prev_bbox)
             if iou > 0.4:  # 使用较低的阈值
-                return True, name
+                return True
         
         # 计算检测框大小
         area = self._calculate_bbox_area(bbox)
         
         # 太小的检测框可能是噪声
         if area < self.min_detection_area:
-            return False, None
+            return False
             
-        # 处理未知人脸的ID分配
-        if name == "Unknown" and encoding is not None:
-            # 查找相似的未知人脸
-            similar_unknown_id = self._find_similar_unknown_face(encoding)
-            if similar_unknown_id is not None:
-                # 使用已有的未知人脸ID
-                return True, similar_unknown_id
-            else:
-                # 创建新的未知人脸ID
-                new_unknown_id = self._create_new_unknown_id(encoding)
-                return True, new_unknown_id
+        # 如果提供了当前帧，进行人脸验证
+        if frame is not None:
+            is_face, confidence = self._verify_face(frame, bbox)
+            if not is_face:
+                return False
         
-        # 对于已知人脸或无编码的未知人脸，保持原有名称
-        return True, name
+        # 默认创建新的跟踪目标
+        return True
     
     def update(
         self, 
-        detections: List[Tuple[Tuple[int, int, int, int], str, Optional[np.ndarray]]]
+        detections: List[Tuple[Tuple[int, int, int, int], str, Optional[np.ndarray]]],
+        frame: Optional[np.ndarray] = None
     ) -> Dict[int, Dict]:
         """
         更新跟踪状态
         
         Args:
             detections: 检测结果列表，每个元素为 (bbox, name, encoding) 元组
+            frame: 当前帧图像，用于人脸验证
             
         Returns:
             跟踪结果字典 {object_id: {bbox, name, ...}}
@@ -476,14 +516,17 @@ class FaceTracker:
         for track_id, det_idx in matched_tracks.items():
             det_bbox, det_name, det_encoding = detections[det_idx]
             
+            # 如果提供了当前帧，进行人脸验证
+            confidence = 0.0
+            if frame is not None:
+                is_face, confidence = self._verify_face(frame, det_bbox)
+                if not is_face:
+                    # 如果验证失败，增加消失计数而不是立即删除
+                    self.tracked_faces[track_id]['disappeared_count'] += 1
+                    continue
+            
             # 平滑边界框位置
             smoothed_bbox = self._smooth_bbox(track_id, det_bbox)
-            
-            # 如果是未知人脸，尝试更新ID
-            if det_name == "Unknown" and det_encoding is not None:
-                similar_unknown_id = self._find_similar_unknown_face(det_encoding)
-                if similar_unknown_id is not None:
-                    det_name = similar_unknown_id
             
             # 更新跟踪对象信息
             self.tracked_faces[track_id]['bbox'] = smoothed_bbox
@@ -492,14 +535,20 @@ class FaceTracker:
                 self.tracked_faces[track_id]['encoding'] = det_encoding
             self.tracked_faces[track_id]['disappeared_count'] = 0
             self.tracked_faces[track_id]['last_time'] = time.time()
+            self.tracked_faces[track_id]['confidence'] = confidence
             
             # 增加年龄（存活帧数）
             self.tracked_faces[track_id]['age'] = self.tracked_faces[track_id].get('age', 0) + 1
         
         # 所有未匹配的跟踪对象，增加消失计数
-        for track_id in self.tracked_faces.keys():
+        for track_id in list(self.tracked_faces.keys()):
             if track_id not in matched_tracks:
                 self.tracked_faces[track_id]['disappeared_count'] += 1
+                
+                # 如果置信度较低且消失次数超过阈值的一半，提前结束跟踪
+                if (self.tracked_faces[track_id].get('confidence', 0) < self.confidence_threshold and 
+                    self.tracked_faces[track_id]['disappeared_count'] > self.max_disappeared // 2):
+                    del self.tracked_faces[track_id]
         
         # 删除消失太久的跟踪对象
         self.tracked_faces = {
@@ -512,21 +561,25 @@ class FaceTracker:
         for det_idx in unmatched_detections:
             detection = detections[det_idx]
             
-            # 判断是否应该创建新的跟踪目标，并获取建议的名称
-            should_create, suggested_name = self._should_create_new_track(detection)
-            
-            if should_create:
-                det_bbox, _, det_encoding = detection  # 使用 suggested_name 替代原始名称
+            # 判断是否应该创建新的跟踪目标
+            if self._should_create_new_track(detection, frame):
+                det_bbox, det_name, det_encoding = detection
+                
+                # 获取初始置信度
+                confidence = 0.0
+                if frame is not None:
+                    _, confidence = self._verify_face(frame, det_bbox)
                 
                 # 创建新的跟踪对象
                 self.tracked_faces[self.next_object_id] = {
                     'bbox': det_bbox,
                     'bbox_history': det_bbox,  # 初始化历史位置
-                    'name': suggested_name,  # 使用建议的名称
+                    'name': det_name,
                     'encoding': det_encoding,
                     'disappeared_count': 0,
                     'last_time': time.time(),
-                    'age': 0  # 初始年龄为0
+                    'age': 0,  # 初始年龄为0
+                    'confidence': confidence  # 添加置信度
                 }
                 
                 # 更新下一个可用ID
