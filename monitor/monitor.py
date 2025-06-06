@@ -37,6 +37,9 @@ class FaceMonitor:
         self.frame_lock = threading.Lock()
         self.detection_count = 0
         
+        # 运动检测频率控制
+        self.last_motion_detection_time = 0
+        
         # 配置日志
         log_file = config.get('monitoring.log_file', './logs/detections.log')
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -159,6 +162,11 @@ class FaceMonitor:
         enable_motion_detection = self.config.get('monitoring.enable_motion_detection', True)
         log_all_detections = self.config.get('monitoring.log_all_detections', True)
         motion_sensitivity = self.config.get('monitoring.motion_sensitivity', 50) / 100.0
+        
+        # 获取运动检测帧率配置
+        motion_detection_fps = self.config.get('monitoring.motion_detection_fps', 5)
+        motion_detection_interval = 1.0 / motion_detection_fps if motion_detection_fps > 0 else 0
+
         save_detected_images = self.config.get('monitoring.actions.save_image', True)
         detected_images_dir = self.config.get('monitoring.actions.images_dir', './data/detected_images')
         
@@ -182,14 +190,21 @@ class FaceMonitor:
                 with self.frame_lock:
                     self.last_frame = frame.copy()
                 
-                # 运动检测（如果启用）
-                if enable_motion_detection and prev_frame is not None:
-                    motion_detected = self._detect_motion(prev_frame, frame, motion_sensitivity)
+                # 运动检测（如果启用，并按指定帧率执行）
+                current_time = time.time()
+                if enable_motion_detection:
+                    if prev_frame is not None:
+                        if current_time - self.last_motion_detection_time >= motion_detection_interval:
+                            self.last_motion_detection_time = current_time
+                            motion_detected = self._detect_motion(prev_frame, frame, motion_sensitivity)
+                            # 仅在执行检测时更新用于比较的上一帧
+                            prev_frame = frame.copy()
+                    else:
+                        # 初始化第一帧
+                        prev_frame = frame.copy()
+                        self.last_motion_detection_time = current_time
                 else:
                     motion_detected = True  # 如果未启用运动检测，则总是进行人脸检测
-                
-                # 更新上一帧
-                prev_frame = frame.copy()
                 
                 # 如果检测到运动或未启用运动检测，则进行人脸识别
                 if motion_detected:
