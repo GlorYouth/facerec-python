@@ -1,0 +1,83 @@
+# 树莓派人脸识别监控系统默认配置文件
+
+# 摄像头配置
+camera:
+  # 摄像头类型: picamera2, opencv, libcamera
+  type: "picamera2"
+  # 摄像头设备ID (对于OpenCV)
+  device_id: 0
+  # 分辨率
+  resolution:
+    width: 640
+    height: 480
+  # 帧率
+  fps: 20
+  # 其他摄像头特定参数
+  options:
+    brightness: 50
+    contrast: 50
+    saturation: 50
+
+# 人脸识别配置
+face_recognition:
+  # 模型配置
+  model: "hog"  # 或 "cnn" 更精确但更慢
+  # 人脸数据库路径
+  known_faces_dir: "./data/known_faces"
+  # 检测阈值（越小越严格）
+  tolerance: 0.6
+  # 是否保存检测到的未知人脸
+  save_unknown_faces: true
+  unknown_faces_dir: "./data/unknown_faces"
+  # 每秒检测帧数（可低于摄像头帧率以减少CPU占用）
+  detection_fps: 5
+
+# 监控配置
+monitoring:
+  # 是否在程序启动时自动启动监控
+  auto_start: true
+  # 是否启用运动检测前置过滤
+  enable_motion_detection: true
+  # 运动检测灵敏度 (1-100)
+  motion_sensitivity: 50
+  # 是否记录所有检测事件
+  log_all_detections: true
+  # 日志文件路径
+  log_file: "./logs/detections.log"
+  # 检测到人脸后的动作
+  actions:
+    # 是否保存图片
+    save_image: true
+    # 图片保存位置
+    images_dir: "./data/detected_images"
+    # 是否发送通知
+    send_notification: false
+
+# Web界面配置
+web_interface:
+  # 是否启用Web界面
+  enabled: true
+  # Web服务监听地址
+  host: "0.0.0.0"
+  # Web服务端口
+  port: 8080
+  # 是否启用认证
+  auth_required: true
+  # 用户凭据
+  credentials:
+    username: "admin"
+    password: "admin123"
+
+# 控制台界面配置
+console_interface:
+  # 是否启用控制台界面
+  enabled: false
+  # 显示详细信息
+  verbose: true
+
+# Qt界面配置
+qt_interface:
+  # 是否启用Qt界面
+  enabled: false
+  # 主题 (light, dark)
+  theme: "dark" 
