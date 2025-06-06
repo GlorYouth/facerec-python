@@ -6,6 +6,7 @@
 import os
 import time
 import uuid
+import cv2
 import numpy as np
 import threading
 from typing import Dict, List, Tuple, Optional, Any
@@ -40,7 +41,7 @@ class FaceRecognizer:
         
         Args:
             known_faces_dir: 已知人脸数据库目录
-            model: 人脸检测模型，可选 'hog' (CPU) 或 'cnn' (GPU，需要 CUDA)
+            model: 人脸检测模型, 可选 'hog' (CPU) 或 'cnn' (GPU), 主要用于 'add_face' 等高精度场景。实时检测将使用速度更快的 Haar Cascade。
             tolerance: 识别容差，值越小越严格
             detection_fps: 检测帧率
             save_unknown_faces: 是否保存未知人脸
@@ -68,6 +69,9 @@ class FaceRecognizer:
         # 字体
         self.font = None
         
+        # Haar-cascade 分类器
+        self.haar_cascade = None
+        
         # 检查依赖
         if not FACE_RECOGNITION_AVAILABLE:
             logging.error("face_recognition 库未安装，无法进行人脸识别")
@@ -76,6 +80,9 @@ class FaceRecognizer:
         os.makedirs(self.known_faces_dir, exist_ok=True)
         if self.save_unknown_faces:
             os.makedirs(self.unknown_faces_dir, exist_ok=True)
+        
+        # 加载 Haar 分类器
+        self._load_haar_cascade()
         
         # 加载已知人脸
         self.load_known_faces()
@@ -107,6 +114,29 @@ class FaceRecognizer:
         # 如果所有字体都加载失败，使用默认字体
         logging.warning("所有推荐字体加载失败，使用默认字体")
         self.font = ImageFont.load_default()
+
+    def _load_haar_cascade(self) -> None:
+        """加载 OpenCV Haar 级联分类器模型"""
+        try:
+            # cv2.data.haarcascades 提供了预训练模型文件的路径
+            haar_xml_file = 'haarcascade_frontalface_default.xml'
+            cascade_path = os.path.join(cv2.data.haarcascades, haar_xml_file)
+            
+            if not os.path.exists(cascade_path):
+                logging.error(f"Haar cascade 文件不存在: {cascade_path}")
+                logging.error("请确保已正确安装 OpenCV (opencv-python) 库。")
+                self.haar_cascade = None
+                return
+
+            self.haar_cascade = cv2.CascadeClassifier(cascade_path)
+            if self.haar_cascade.empty():
+                logging.error(f"加载 Haar cascade 文件失败: {cascade_path}")
+                self.haar_cascade = None
+            else:
+                logging.info(f"成功加载 Haar cascade 分类器。")
+        except Exception as e:
+            logging.error(f"加载 Haar cascade 时出错: {e}")
+            self.haar_cascade = None
 
     def load_known_faces(self) -> None:
         """加载已知人脸数据库"""
@@ -216,12 +246,22 @@ class FaceRecognizer:
         Returns:
             人脸位置列表，每个元素为 ((top, right, bottom, left), 标签) 形式
         """
-        if not FACE_RECOGNITION_AVAILABLE:
+        if not FACE_RECOGNITION_AVAILABLE or self.haar_cascade is None:
             return []
             
         with self.detection_lock:
-            # 检测人脸位置
-            face_locations = face_recognition.face_locations(frame, model=self.model)
+            # 使用 Haar Cascade 替换 HOG 进行快速检测
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            faces = self.haar_cascade.detectMultiScale(
+                gray_frame,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(80, 80),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            
+            # 转换坐标格式从 (x, y, w, h) 到 (top, right, bottom, left)
+            face_locations = [(y, x + w, y + h, x) for (x, y, w, h) in faces]
             return [(location, "") for location in face_locations]
             
     def recognize_faces(
@@ -236,37 +276,45 @@ class FaceRecognizer:
         Returns:
             识别结果列表，每个元素为 ((top, right, bottom, left), 人名) 形式
         """
-        if not FACE_RECOGNITION_AVAILABLE or not self.need_detection():
+        if not FACE_RECOGNITION_AVAILABLE or not self.need_detection() or self.haar_cascade is None:
             return []
             
         with self.detection_lock:
-            # 检测人脸位置
-            face_locations = face_recognition.face_locations(frame, model=self.model)
+            # 1. 使用 Haar Cascade 替换 HOG 进行快速人脸位置检测
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            faces = self.haar_cascade.detectMultiScale(
+                gray_frame,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(60, 60),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            
+            # 转换坐标格式从 (x, y, w, h) 到 (top, right, bottom, left)
+            face_locations = [(y, x + w, y + h, x) for (x, y, w, h) in faces]
             
             if not face_locations:
                 return []
                 
-            # 提取人脸特征
+            # 2. 对检测到的人脸提取特征 (这一步仍然是计算密集型)
             face_encodings = face_recognition.face_encodings(frame, face_locations)
             
+            # 3. 进行人脸比对
             results = []
-            for i, (face_location, face_encoding) in enumerate(zip(face_locations, face_encodings)):
+            for i, face_encoding in enumerate(face_encodings):
+                # 获取当前人脸的位置
+                face_location = face_locations[i]
+                
                 # 与已知人脸比较
                 matches = face_recognition.compare_faces(
-                    self.known_face_encodings, face_encoding, tolerance=self.tolerance
+                    self.known_face_encodings, face_encoding, self.tolerance
                 )
+                name = "Unknown"
                 
-                name = "未知"
-                
+                # 如果找到匹配
                 if True in matches:
-                    # 找出所有匹配的人脸中距离最小的
-                    face_distances = face_recognition.face_distance(
-                        self.known_face_encodings, face_encoding
-                    )
-                    best_match_index = np.argmin(face_distances)
-                    
-                    if matches[best_match_index]:
-                        name = self.known_face_names[best_match_index]
+                    first_match_index = matches.index(True)
+                    name = self.known_face_names[first_match_index]
                 else:
                     # 处理未知人脸
                     if self.save_unknown_faces:
