@@ -4,7 +4,8 @@
 """
 
 from .face_recognizer import FaceRecognizer
+from .face_tracker import FaceTracker
 
-__all__ = ['FaceRecognizer']
+__all__ = ['FaceRecognizer', 'FaceTracker']
 
  

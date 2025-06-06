@@ -30,7 +30,28 @@ face_recognition:
   save_unknown_faces: false
   unknown_faces_dir: "./data/unknown_faces"
   # 每秒检测帧数（可低于摄像头帧率以减少CPU占用）
-  detection_fps: 30
+  detection_fps: 5
+
+# 人脸跟踪配置
+face_tracking:
+  # 是否启用人脸跟踪
+  enable: true
+  # 最大连续消失帧数，超过此值将删除跟踪对象
+  max_disappeared: 50
+  # 特征向量最小距离阈值，小于此值认为是同一个人
+  min_distance: 0.6
+  # 最小IOU阈值，小于此值不考虑合并检测框
+  min_iou: 0.3
+  # 重叠框过滤阈值，两个框的IOU大于此值时视为重叠
+  overlap_threshold: 0.5
+  # 跟踪结果平滑，设置为0则不进行平滑
+  smoothing_factor: 0.3
+  # 最小检测框面积，小于此值的检测框将被忽略
+  min_detection_area: 1000
+  # 未知人脸特征相似度阈值
+  unknown_face_threshold: 0.5
+  # 跟踪框最大暂留时间(秒)，默认1秒
+  max_retention_time: 1.0
 
 # 监控配置
 monitoring:
@@ -41,7 +62,7 @@ monitoring:
   # 运动检测灵敏度 (1-100)
   motion_sensitivity: 70
   # 运动检测帧率（可低于摄像头帧率以降低CPU占用）
-  motion_detection_fps: 30
+  motion_detection_fps: 10
   # 是否记录所有检测事件
   log_all_detections: false
   # 日志文件路径

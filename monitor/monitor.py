@@ -15,6 +15,7 @@ from config.config_manager import ConfigManager
 from camera.camera_interface import CameraInterface
 from camera.camera_factory import CameraFactory
 from face.face_recognizer import FaceRecognizer
+from face.face_tracker import FaceTracker
 from utils.file_writer import FileWriter
 
 
@@ -33,6 +34,7 @@ class FaceMonitor:
         self.file_writer = file_writer
         self.camera = None
         self.face_recognizer = None
+        self.face_tracker = None
         self.is_running = False
         self.monitor_thread = None
         self.last_frame = None
@@ -42,6 +44,9 @@ class FaceMonitor:
         
         # 运动检测频率控制
         self.last_motion_detection_time = 0
+        
+        # 人脸识别频率控制
+        self.last_recognition_time = 0
         
         # 配置日志
         log_file = config.get('monitoring.log_file', './logs/detections.log')
@@ -105,6 +110,17 @@ class FaceMonitor:
                 save_unknown_faces=save_unknown_faces,
                 unknown_faces_dir=unknown_faces_dir,
                 file_writer=self.file_writer
+            )
+            
+            # 创建人脸跟踪器
+            max_disappeared = self.config.get('face_tracking.max_disappeared', 30)
+            min_distance = self.config.get('face_tracking.min_distance', 0.6)
+            min_iou = self.config.get('face_tracking.min_iou', 0.3)
+            
+            self.face_tracker = FaceTracker(
+                max_disappeared=max_disappeared,
+                min_distance=min_distance,
+                min_iou=min_iou
             )
             
         except Exception as e:
@@ -171,6 +187,13 @@ class FaceMonitor:
         motion_detection_fps = self.config.get('monitoring.motion_detection_fps', 5)
         motion_detection_interval = 1.0 / motion_detection_fps if motion_detection_fps > 0 else 0
 
+        # 获取人脸识别帧率配置
+        recognition_fps = self.config.get('face_recognition.detection_fps', 5)
+        recognition_interval = 1.0 / recognition_fps if recognition_fps > 0 else 0
+        
+        # 获取跟踪配置
+        enable_face_tracking = self.config.get('face_tracking.enable', True)
+
         save_detected_images = self.config.get('monitoring.actions.save_image', True)
         detected_images_dir = self.config.get('monitoring.actions.images_dir', './data/detected_images')
         
@@ -180,6 +203,12 @@ class FaceMonitor:
             
         prev_frame = None
         motion_detected = False
+        
+        # 最后一次进行完整识别的时间
+        self.last_recognition_time = 0
+        
+        # 跟踪的人脸结果
+        tracked_faces = {}
         
         while self.is_running:
             try:
@@ -210,26 +239,69 @@ class FaceMonitor:
                 else:
                     motion_detected = True  # 如果未启用运动检测，则总是进行人脸检测
                 
-                # 如果检测到运动或未启用运动检测，则进行人脸识别
+                # 处理逻辑：基于帧率和运动检测结果决定是进行完整识别还是只进行跟踪
                 if motion_detected:
-                    # 人脸识别
-                    face_results = self.face_recognizer.recognize_faces(frame)
+                    # 确定是否需要进行完整的人脸识别（基于帧率）
+                    need_full_recognition = current_time - self.last_recognition_time >= recognition_interval
                     
-                    # 如果检测到人脸
-                    if face_results:
+                    if need_full_recognition:
+                        # 进行完整的人脸识别
+                        self.last_recognition_time = current_time
+                        face_results = self.face_recognizer.recognize_faces(frame)
+                        
+                        # 转换识别结果格式，添加编码信息
+                        full_face_results = []
+                        for (bbox, name) in face_results:
+                            # 从原始图像中获取人脸区域
+                            top, right, bottom, left = bbox
+                            face_image = frame[top:bottom, left:right]
+                            
+                            # 尝试提取编码
+                            encoding = None
+                            try:
+                                import face_recognition
+                                encodings = face_recognition.face_encodings(face_image)
+                                if encodings:
+                                    encoding = encodings[0]
+                            except Exception as e:
+                                logging.debug(f"无法提取人脸编码：{e}")
+                            
+                            full_face_results.append((bbox, name, encoding))
+                        
+                        # 更新跟踪器
+                        if enable_face_tracking:
+                            tracked_faces = self.face_tracker.update(full_face_results)
+                    elif enable_face_tracking and tracked_faces:
+                        # 仅使用跟踪结果，不进行完整识别
+                        pass
+                    else:
+                        # 如果没有跟踪结果且不需要完整识别，跳过
+                        continue
+                    
+                    # 准备显示结果
+                    if enable_face_tracking and tracked_faces:
+                        # 使用跟踪结果
+                        display_results = [(track_info['bbox'], track_info['name']) 
+                                        for track_id, track_info in tracked_faces.items()]
+                    else:
+                        # 使用识别结果
+                        display_results = face_results if need_full_recognition else []
+                    
+                    # 如果有人脸结果（识别或跟踪）
+                    if display_results:
                         self.detection_count += 1
                         
                         # 保存检测结果（用于界面显示）
                         with self.frame_lock:
-                            self.last_detection_results = face_results
+                            self.last_detection_results = display_results
                             
                         # 记录检测结果
                         if log_all_detections:
-                            self._log_detection(face_results)
+                            self._log_detection(display_results)
                             
                         # 保存检测到的图像
                         if save_detected_images:
-                            self._save_detection_image(frame, face_results)
+                            self._save_detection_image(frame, display_results)
                 
                 # 限制帧率，减少CPU使用
                 time.sleep(0.01)
