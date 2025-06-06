@@ -309,7 +309,7 @@ class FaceRecognizer:
                 try:
                     if os.path.exists(font_path):
                         font = ImageFont.truetype(font_path, 20)
-                        logging.info(f"使用字体: {font_path}")
+                        logging.debug(f"使用字体: {font_path}")
                         break
                 except Exception as e:
                     logging.warning(f"加载字体 {font_path} 失败: {e}")
