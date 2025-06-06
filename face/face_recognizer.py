@@ -256,7 +256,7 @@ class FaceRecognizer:
                 gray_frame,
                 scaleFactor=1.1,
                 minNeighbors=5,
-                minSize=(80, 80),
+                minSize=(60, 60),
                 flags=cv2.CASCADE_SCALE_IMAGE
             )
             
