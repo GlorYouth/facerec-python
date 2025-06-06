@@ -60,6 +60,9 @@ class FaceRecognizer:
         # 上次检测时间
         self.last_detection_time = 0
         
+        # 字体
+        self.font = None
+        
         # 检查依赖
         if not FACE_RECOGNITION_AVAILABLE:
             logging.error("face_recognition 库未安装，无法进行人脸识别")
@@ -72,6 +75,34 @@ class FaceRecognizer:
         # 加载已知人脸
         self.load_known_faces()
         
+        # 加载字体
+        self._load_font()
+        
+    def _load_font(self, size: int = 20) -> None:
+        """加载用于绘制文本的字体文件"""
+        font_paths = [
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # 文泉驿微米黑
+            "C:/Windows/Fonts/msyh.ttc",                      # 微软雅黑 (Windows)
+            "/System/Library/Fonts/STHeitiLight.ttc",          # 黑体-简 (macOS)
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # DejaVu Sans
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",    # 文泉驿正黑
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"  # Droid Sans
+        ]
+        
+        for font_path in font_paths:
+            try:
+                if os.path.exists(font_path):
+                    self.font = ImageFont.truetype(font_path, size)
+                    logging.debug(f"使用字体: {font_path}")
+                    return
+            except Exception as e:
+                logging.warning(f"加载字体 {font_path} 失败: {e}")
+                continue
+        
+        # 如果所有字体都加载失败，使用默认字体
+        logging.warning("所有推荐字体加载失败，使用默认字体")
+        self.font = ImageFont.load_default()
+
     def load_known_faces(self) -> None:
         """加载已知人脸数据库"""
         self.known_face_encodings = []
@@ -280,79 +311,66 @@ class FaceRecognizer:
         face_results: List[Tuple[Tuple[int, int, int, int], str]]
     ) -> np.ndarray:
         """
-        在图像上绘制人脸框和名字
+        在图像上绘制人脸框和名字（优化版）
+        该方法通过仅在需要绘制文本的局部区域使用PIL，避免了对整个帧进行格式转换，从而提高性能。
         
         Args:
-            frame: 原始图像
+            frame: 原始图像 (OpenCV BGR格式)
             face_results: 人脸识别结果列表
             
         Returns:
-            绘制后的图像
+            绘制后的图像 (OpenCV BGR格式)
         """
         try:
             import cv2
             
-            # 转换为PIL图像以支持中文
-            frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            draw = ImageDraw.Draw(frame_pil)
-            
-            # 尝试加载字体
-            font = None
-            font_paths = [
-                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # 文泉驿微米黑
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # DejaVu Sans
-                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",    # 文泉驿正黑
-                "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"  # Droid Sans
-            ]
-            
-            for font_path in font_paths:
-                try:
-                    if os.path.exists(font_path):
-                        font = ImageFont.truetype(font_path, 20)
-                        logging.debug(f"使用字体: {font_path}")
-                        break
-                except Exception as e:
-                    logging.warning(f"加载字体 {font_path} 失败: {e}")
-                    continue
-            
-            # 如果所有字体都加载失败，使用默认字体
-            if font is None:
-                logging.warning("所有字体加载失败，使用默认字体")
-                font = ImageFont.load_default()
-            
+            # 如果没有加载字体或没有识别结果，直接返回原图
+            if self.font is None or not face_results:
+                return frame
+
             # 绘制每个人脸
             for (top, right, bottom, left), name in face_results:
-                # 绘制人脸框
-                draw.rectangle([(left, top), (right, bottom)], outline=(0, 255, 0), width=2)
+                # 1. 直接在OpenCV帧上绘制矩形框（非常快）
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
                 
-                # 准备文本
+                # 2. 准备文本和背景
                 text = name if name != "未知" else "Unknown"
                 
+                # 3. 使用PIL在内存中创建文本图像（只处理小尺寸的文本区域）
                 try:
-                    # 使用新的API计算文本大小
-                    bbox = draw.textbbox((0, 0), text, font=font)
+                    # 获取文本尺寸
+                    bbox = self.font.getbbox(text)
                     text_width = bbox[2] - bbox[0]
                     text_height = bbox[3] - bbox[1]
                     
-                    # 绘制文本背景
-                    draw.rectangle(
-                        [(left, bottom), (left + text_width, bottom + text_height + 4)],
-                        fill=(0, 255, 0)
-                    )
+                    # 创建文本背景PIL图像
+                    text_bg_pil = Image.new("RGB", (text_width + 4, text_height + 4), (0, 255, 0))
+                    draw = ImageDraw.Draw(text_bg_pil)
+                    # 在PIL图像上绘制白色文本
+                    draw.text((2, 2), text, font=self.font, fill=(255, 255, 255))
                     
-                    # 绘制文本
-                    draw.text((left, bottom), text, fill=(255, 255, 255), font=font)
+                    # 4. 将PIL文本图像转换回OpenCV格式
+                    text_bg_cv = cv2.cvtColor(np.array(text_bg_pil), cv2.COLOR_RGB2BGR)
+                    
+                    # 5. 计算文本在主图像上的粘贴位置
+                    y1 = bottom
+                    y2 = bottom + text_bg_cv.shape[0]
+                    x1 = left
+                    x2 = left + text_bg_cv.shape[1]
+                    
+                    # 确保粘贴区域不超出主图像边界
+                    if y2 > frame.shape[0]:
+                        y2 = frame.shape[0]
+                        text_bg_cv = text_bg_cv[:y2-y1, :]
+                    if x2 > frame.shape[1]:
+                        x2 = frame.shape[1]
+                        text_bg_cv = text_bg_cv[:, :x2-x1]
+
+                    # 6. 将文本图像"粘贴"到主图像上
+                    frame[y1:y2, x1:x2] = text_bg_cv
+
                 except Exception as e:
-                    logging.error(f"绘制文本失败: {e}")
-                    # 如果文本绘制失败，至少绘制一个简单的标签
-                    draw.rectangle(
-                        [(left, bottom), (left + 100, bottom + 30)],
-                        fill=(0, 255, 0)
-                    )
-                    draw.text((left + 5, bottom + 5), "Face", fill=(255, 255, 255), font=font)
-            
-            # 转换回OpenCV格式
-            frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+                    logging.error(f"绘制文本 '{text}' 失败: {e}")
             
         except Exception as e:
             logging.error(f"绘制人脸框失败: {e}")
