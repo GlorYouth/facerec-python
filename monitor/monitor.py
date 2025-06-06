@@ -15,19 +15,22 @@ from config.config_manager import ConfigManager
 from camera.camera_interface import CameraInterface
 from camera.camera_factory import CameraFactory
 from face.face_recognizer import FaceRecognizer
+from utils.file_writer import FileWriter
 
 
 class FaceMonitor:
     """人脸监控类，整合摄像头和人脸识别功能"""
     
-    def __init__(self, config: ConfigManager):
+    def __init__(self, config: ConfigManager, file_writer: FileWriter):
         """
         初始化人脸监控
         
         Args:
             config: 配置管理器实例
+            file_writer: 文件写入器实例
         """
         self.config = config
+        self.file_writer = file_writer
         self.camera = None
         self.face_recognizer = None
         self.is_running = False
@@ -100,7 +103,8 @@ class FaceMonitor:
                 tolerance=face_tolerance,
                 detection_fps=detection_fps,
                 save_unknown_faces=save_unknown_faces,
-                unknown_faces_dir=unknown_faces_dir
+                unknown_faces_dir=unknown_faces_dir,
+                file_writer=self.file_writer
             )
             
         except Exception as e:
@@ -308,12 +312,12 @@ class FaceMonitor:
             filename = f"detected_{timestamp}.jpg"
             filepath = os.path.join(detected_images_dir, filename)
             
-            # 保存图像
-            cv2.imwrite(filepath, cv2.cvtColor(marked_frame, cv2.COLOR_RGB2BGR))
-            logging.debug(f"已保存检测图像: {filepath}")
+            # 异步保存图像
+            self.file_writer.save(marked_frame, filepath)
+            logging.debug(f"已将检测图像任务提交到队列: {filepath}")
             
         except Exception as e:
-            logging.error(f"保存检测图像失败: {e}")
+            logging.error(f"提交检测图像保存任务失败: {e}")
             
     def get_latest_frame(self) -> Optional[np.ndarray]:
         """

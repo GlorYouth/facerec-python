@@ -19,6 +19,8 @@ try:
 except ImportError:
     FACE_RECOGNITION_AVAILABLE = False
 
+from utils.file_writer import FileWriter
+
 
 class FaceRecognizer:
     """人脸识别类，提供人脸检测和识别功能"""
@@ -31,6 +33,7 @@ class FaceRecognizer:
         detection_fps: int = 5,
         save_unknown_faces: bool = True,
         unknown_faces_dir: str = None,
+        file_writer: Optional[FileWriter] = None
     ):
         """
         初始化人脸识别器
@@ -42,6 +45,7 @@ class FaceRecognizer:
             detection_fps: 检测帧率
             save_unknown_faces: 是否保存未知人脸
             unknown_faces_dir: 未知人脸保存目录
+            file_writer: 异步文件写入器实例
         """
         self.known_faces_dir = known_faces_dir
         self.model = model
@@ -49,6 +53,7 @@ class FaceRecognizer:
         self.detection_interval = 1.0 / detection_fps if detection_fps > 0 else 0
         self.save_unknown_faces = save_unknown_faces
         self.unknown_faces_dir = unknown_faces_dir or "./data/unknown_faces"
+        self.file_writer = file_writer
         
         # 已知人脸数据
         self.known_face_encodings = []
@@ -298,12 +303,19 @@ class FaceRecognizer:
             filename = f"unknown_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
             filepath = os.path.join(self.unknown_faces_dir, filename)
             
-            # 保存图片
-            import cv2
-            cv2.imwrite(filepath, cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR))
-            logging.debug(f"已保存未知人脸: {filepath}")
+            # 异步保存图片
+            if self.file_writer:
+                # 将图像从RGB转换为BGR以供cv2.imwrite使用
+                face_image_bgr = cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR)
+                self.file_writer.save(face_image_bgr, filepath)
+                logging.debug(f"已提交未知人脸保存任务: {filepath}")
+            else:
+                # 如果没有提供写入器，则同步回退
+                import cv2
+                cv2.imwrite(filepath, cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR))
+                logging.warning(f"文件写入器未提供，同步保存未知人脸: {filepath}")
         except Exception as e:
-            logging.error(f"保存未知人脸失败: {e}")
+            logging.error(f"保存未知人脸任务提交失败: {e}")
             
     def draw_faces(
         self, 

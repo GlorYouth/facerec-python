@@ -14,6 +14,7 @@ from typing import Optional
 from config.config_manager import ConfigManager
 from monitor.monitor import FaceMonitor
 from interface.web.web_server import WebServer
+from utils.file_writer import FileWriter
 
 
 class Application:
@@ -37,8 +38,11 @@ class Application:
         # 配置日志
         self._setup_logging()
         
+        # 初始化文件写入器
+        self.file_writer = FileWriter()
+        
         # 初始化监控系统
-        self.monitor = FaceMonitor(self.config)
+        self.monitor = FaceMonitor(self.config, self.file_writer)
         
         # 初始化Web服务器
         self.web_server = None
@@ -102,6 +106,10 @@ class Application:
         # 设置运行状态
         self.running = True
         
+        # 启动文件写入器
+        if self.file_writer:
+            self.file_writer.start()
+            
         # 启动Web服务器
         if self.web_server:
             self.web_server.start()
@@ -141,6 +149,10 @@ class Application:
         # 停止Web服务器
         if self.web_server:
             self.web_server.stop()
+            
+        # 停止文件写入器
+        if self.file_writer:
+            self.file_writer.stop()
             
         # 更新状态
         self.running = False
