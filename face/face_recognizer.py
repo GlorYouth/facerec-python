@@ -11,6 +11,7 @@ import threading
 from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime
 import logging
+from PIL import Image, ImageDraw, ImageFont
 
 try:
     import face_recognition
@@ -279,37 +280,81 @@ class FaceRecognizer:
         face_results: List[Tuple[Tuple[int, int, int, int], str]]
     ) -> np.ndarray:
         """
-        在图像上绘制识别结果
+        在图像上绘制人脸框和名字
         
         Args:
-            frame: 输入图像
-            face_results: 识别结果列表，每个元素为 ((top, right, bottom, left), 人名) 形式
+            frame: 原始图像
+            face_results: 人脸识别结果列表
             
         Returns:
-            绘制了人脸框和标签的图像
+            绘制后的图像
         """
-        import cv2
-        
-        # 复制原图
-        result_frame = frame.copy()
-        
-        # 绘制每个人脸
-        for (top, right, bottom, left), name in face_results:
-            # 绘制人脸框
-            cv2.rectangle(result_frame, (left, top), (right, bottom), (0, 255, 0), 2)
+        try:
+            import cv2
             
-            # 绘制名称标签背景
-            cv2.rectangle(result_frame, (left, bottom - 35), (right, bottom), (0, 255, 0), cv2.FILLED)
+            # 转换为PIL图像以支持中文
+            frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(frame_pil)
             
-            # 绘制名称
-            cv2.putText(
-                result_frame,
-                name,
-                (left + 6, bottom - 6),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2
-            )
+            # 尝试加载字体
+            font = None
+            font_paths = [
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # 文泉驿微米黑
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # DejaVu Sans
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",    # 文泉驿正黑
+                "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"  # Droid Sans
+            ]
             
-        return result_frame 
+            for font_path in font_paths:
+                try:
+                    if os.path.exists(font_path):
+                        font = ImageFont.truetype(font_path, 20)
+                        logging.info(f"使用字体: {font_path}")
+                        break
+                except Exception as e:
+                    logging.warning(f"加载字体 {font_path} 失败: {e}")
+                    continue
+            
+            # 如果所有字体都加载失败，使用默认字体
+            if font is None:
+                logging.warning("所有字体加载失败，使用默认字体")
+                font = ImageFont.load_default()
+            
+            # 绘制每个人脸
+            for (top, right, bottom, left), name in face_results:
+                # 绘制人脸框
+                draw.rectangle([(left, top), (right, bottom)], outline=(0, 255, 0), width=2)
+                
+                # 准备文本
+                text = name if name != "未知" else "Unknown"
+                
+                try:
+                    # 使用新的API计算文本大小
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                    
+                    # 绘制文本背景
+                    draw.rectangle(
+                        [(left, bottom), (left + text_width, bottom + text_height + 4)],
+                        fill=(0, 255, 0)
+                    )
+                    
+                    # 绘制文本
+                    draw.text((left, bottom), text, fill=(255, 255, 255), font=font)
+                except Exception as e:
+                    logging.error(f"绘制文本失败: {e}")
+                    # 如果文本绘制失败，至少绘制一个简单的标签
+                    draw.rectangle(
+                        [(left, bottom), (left + 100, bottom + 30)],
+                        fill=(0, 255, 0)
+                    )
+                    draw.text((left + 5, bottom + 5), "Face", fill=(255, 255, 255), font=font)
+            
+            # 转换回OpenCV格式
+            frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+            
+        except Exception as e:
+            logging.error(f"绘制人脸框失败: {e}")
+            
+        return frame 
