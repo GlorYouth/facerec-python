@@ -48,10 +48,6 @@ face_tracking:
   smoothing_factor: 0.3
   # 最小检测框面积，小于此值的检测框将被忽略
   min_detection_area: 1000
-  # 未知人脸特征相似度阈值
-  unknown_face_threshold: 0.5
-  # 跟踪框最大暂留时间(秒)，默认1秒
-  max_retention_time: 1.0
 
 # 监控配置
 monitoring:

@@ -20,8 +20,7 @@ class FaceTracker:
         overlap_threshold: float = 0.5,
         smoothing_factor: float = 0.3,
         min_detection_area: int = 1000,
-        unknown_face_threshold: float = 0.5,  # 未知人脸特征相似度阈值
-        max_retention_time: float = 1.0  # 跟踪框最大暂留时间(秒)，默认1秒
+        unknown_face_threshold: float = 0.5  # 未知人脸特征相似度阈值
     ):
         """
         初始化人脸跟踪器
@@ -34,7 +33,6 @@ class FaceTracker:
             smoothing_factor: 跟踪结果平滑因子，0表示不平滑，1表示完全使用历史位置
             min_detection_area: 最小检测框面积，小于此值的检测框将被忽略
             unknown_face_threshold: 未知人脸特征相似度阈值，小于此值认为是同一个人
-            max_retention_time: 跟踪框最大暂留时间(秒)，超过此时间无更新将被删除
         """
         self.max_disappeared = max_disappeared
         self.min_distance = min_distance
@@ -43,7 +41,6 @@ class FaceTracker:
         self.smoothing_factor = smoothing_factor
         self.min_detection_area = min_detection_area
         self.unknown_face_threshold = unknown_face_threshold
-        self.max_retention_time = max_retention_time
         
         # 下一个可用的对象ID
         self.next_object_id = 0
@@ -472,9 +469,6 @@ class FaceTracker:
         Returns:
             跟踪结果字典 {object_id: {bbox, name, ...}}
         """
-        # 记录当前时间
-        current_time = time.time()
-        
         # 关联检测结果和跟踪对象
         matched_tracks, unmatched_detections = self._associate_detections_to_tracks(detections)
         
@@ -497,7 +491,7 @@ class FaceTracker:
             if det_encoding is not None:
                 self.tracked_faces[track_id]['encoding'] = det_encoding
             self.tracked_faces[track_id]['disappeared_count'] = 0
-            self.tracked_faces[track_id]['last_time'] = current_time
+            self.tracked_faces[track_id]['last_time'] = time.time()
             
             # 增加年龄（存活帧数）
             self.tracked_faces[track_id]['age'] = self.tracked_faces[track_id].get('age', 0) + 1
@@ -507,12 +501,11 @@ class FaceTracker:
             if track_id not in matched_tracks:
                 self.tracked_faces[track_id]['disappeared_count'] += 1
         
-        # 删除消失太久或超过最大暂留时间的跟踪对象
+        # 删除消失太久的跟踪对象
         self.tracked_faces = {
             track_id: track_info 
             for track_id, track_info in self.tracked_faces.items() 
-            if (track_info['disappeared_count'] <= self.max_disappeared and
-                (current_time - track_info['last_time']) <= self.max_retention_time)
+            if track_info['disappeared_count'] <= self.max_disappeared
         }
         
         # 添加新的检测对象，但有条件地
@@ -532,7 +525,7 @@ class FaceTracker:
                     'name': suggested_name,  # 使用建议的名称
                     'encoding': det_encoding,
                     'disappeared_count': 0,
-                    'last_time': current_time,
+                    'last_time': time.time(),
                     'age': 0  # 初始年龄为0
                 }
                 
