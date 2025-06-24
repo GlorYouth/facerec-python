@@ -236,7 +236,6 @@
                                         </button>
                                     </div>
                                 </form>
-                                <div id="addFaceAlert" class="alert mt-3" style="display: none;"></div>
                             </div>
                         </div>
                     </div>
@@ -255,18 +254,16 @@
                             </div>
                         </div>
 
-                        <!-- 检测历史卡片 -->
+                        <!-- 最近识别卡片 -->
                         <div class="card shadow mb-4">
-                            <div class="card-header d-flex justify-content-between align-items-center">
-                                <h6 class="m-0 font-weight-bold">检测历史</h6>
-                                <a href="#" class="btn btn-primary btn-sm">
-                                    <i class="fas fa-list"></i> 查看全部
-                                </a>
+                            <div class="card-header">
+                                <h6 class="m-0 font-weight-bold">最近识别</h6>
                             </div>
                             <div class="card-body">
-                                <div id="detectedImagesList" class="detection-grid">
-                                    <p id="noDetectedImages" class="text-center text-muted">暂无检测记录</p>
-                                </div>
+                                <ul class="list-group list-group-flush" id="recentFacesList">
+                                    <!-- JS will populate this -->
+                                </ul>
+                                <p id="noRecentFaces" class="text-center text-muted" style="display: block;">暂无识别记录</p>
                             </div>
                         </div>
                     </div>
@@ -274,6 +271,9 @@
             </div>
         </div>
     </div>
+
+    <!-- 提示消息容器 -->
+    <div id="toast-container" class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1055;"></div>
 
     <!-- 图片预览模态框 -->
     <div class="modal fade" id="imagePreviewModal" tabindex="-1" aria-hidden="true">
@@ -327,9 +327,9 @@
             // 加载已知人脸
             loadKnownFaces();
             
-            // 加载检测到的图像
-            loadDetectedImages();
-            setInterval(loadDetectedImages, 10000);  // 每10秒刷新一次
+            // 加载最近识别的人脸
+            loadRecentFaces();
+            setInterval(loadRecentFaces, 5000); // 每5秒刷新
             
             // 开始按钮
             document.getElementById('startBtn').addEventListener('click', function() {
@@ -358,6 +358,11 @@
                 const personName = document.getElementById('personName').value.trim();
                 if (!personName) return;
                 
+                const submitButton = this.querySelector('button[type="submit"]');
+                const originalButtonText = submitButton.innerHTML;
+                submitButton.disabled = true;
+                submitButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 处理中...`;
+
                 fetch('/api/add_face', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -365,21 +370,22 @@
                 })
                 .then(response => response.json())
                 .then(data => {
-                    const alert = document.getElementById('addFaceAlert');
-                    alert.textContent = data.message;
-                    alert.className = data.success ? 
-                        'alert alert-success mt-3' : 'alert alert-danger mt-3';
-                    alert.style.display = 'block';
-                    
-                    setTimeout(() => {
-                        alert.style.display = 'none';
-                    }, 3000);
-                    
                     if (data.success) {
+                        showToast('成功', `已提交添加 '${personName}' 的请求。`, 'success');
                         document.getElementById('personName').value = '';
-                        // 重新加载已知人脸列表
-                        setTimeout(loadKnownFaces, 1000);
+                        // 稍等片刻，让后台有时间处理图片，然后刷新列表
+                        setTimeout(loadKnownFaces, 2000); 
+                    } else {
+                        showToast('添加失败', data.message, 'danger');
                     }
+                })
+                .catch(error => {
+                    console.error('添加人脸时出错:', error);
+                    showToast('网络错误', '请求失败，请检查网络连接。', 'danger');
+                })
+                .finally(() => {
+                    submitButton.disabled = false;
+                    submitButton.innerHTML = originalButtonText;
                 });
             });
             
@@ -432,11 +438,14 @@
                         data.forEach(face => {
                             html += `
                                 <div class="face-card">
-                                    <img src="${face.image}" class="face-img" 
+                                    <img src="${face.image}?t=${new Date().getTime()}" class="face-img" 
                                          alt="${face.name}" 
                                          onclick="previewImage('${face.image}', '${face.name}')">
-                                    <div class="face-info">
-                                        <h6>${face.name}</h6>
+                                    <div class="face-info d-flex justify-content-between align-items-center">
+                                        <h6 class="mb-0 text-truncate" title="${face.name}">${face.name}</h6>
+                                        <button class="btn btn-sm btn-outline-danger ms-2" onclick="deleteFace('${face.name}')" title="删除人脸">
+                                            <i class="fas fa-trash-alt"></i>
+                                        </button>
                                     </div>
                                 </div>
                             `;
@@ -452,41 +461,111 @@
                 });
         }
         
-        // 加载检测到的图像
-        function loadDetectedImages() {
-            fetch('/api/detected_images')
+        // 删除已知人脸
+        function deleteFace(personName) {
+            if (!confirm(`您确定要删除人脸 "${personName}" 吗？\n此操作将删除其所有相关照片，且无法恢复。`)) {
+                return;
+            }
+            
+            fetch('/api/delete_face', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: personName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('成功', data.message, 'success');
+                    loadKnownFaces(); // 重新加载列表
+                } else {
+                    showToast('删除失败', data.message, 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('删除人脸时出错:', error);
+                showToast('网络错误', '请求失败，请检查网络连接。', 'danger');
+            });
+        }
+        
+        // 加载最近识别的人脸
+        function loadRecentFaces() {
+            fetch('/api/recent_faces')
                 .then(response => response.json())
                 .then(data => {
-                    const container = document.getElementById('detectedImagesList');
-                    const noDataElem = document.getElementById('noDetectedImages');
+                    const list = document.getElementById('recentFacesList');
+                    const noDataElem = document.getElementById('noRecentFaces');
                     
                     if (data.length > 0) {
                         noDataElem.style.display = 'none';
-                        
-                        // 只显示最近的4个
-                        const recentImages = data.slice(0, 4);
+                        list.style.display = 'block';
                         
                         let html = '';
-                        recentImages.forEach(image => {
-                            const timestamp = new Date(image.timestamp).toLocaleString();
+                        data.forEach(face => {
                             html += `
-                                <div class="detection-card">
-                                    <img src="${image.url}" class="detection-img" 
-                                         alt="检测图像"
-                                         onclick="previewImage('${image.url}', '${timestamp}')">
-                                    <div class="detection-info">
-                                        <p class="timestamp">${timestamp}</p>
-                                    </div>
-                                </div>
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <span>
+                                        <i class="fas fa-user-check me-2 text-success"></i>
+                                        ${face.name}
+                                    </span>
+                                    <span class="badge bg-secondary rounded-pill">${formatTimeAgo(face.last_seen)}</span>
+                                </li>
                             `;
                         });
-                        
-                        container.innerHTML = html;
+                        list.innerHTML = html;
                     } else {
                         noDataElem.style.display = 'block';
-                        container.innerHTML = '';
+                        list.style.display = 'none';
                     }
                 });
+        }
+
+        function formatTimeAgo(timestamp) {
+            const now = new Date();
+            // 后端返回的是 time.time() 的 unix timestamp
+            const seenTime = new Date(timestamp * 1000); 
+            const seconds = Math.floor((now - seenTime) / 1000);
+
+            if (seconds < 5) return "刚刚";
+            if (seconds < 60) return `${seconds}秒前`;
+            
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return `${minutes}分钟前`;
+
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return `${hours}小时前`;
+
+            const days = Math.floor(hours / 24);
+            return `${days}天前`;
+        }
+
+        // 通用消息提示
+        function showToast(title, message, type = 'info') {
+            const toastContainer = document.getElementById('toast-container');
+            if (!toastContainer) return;
+
+            const toastId = 'toast-' + Math.random().toString(36).substring(2, 9);
+            const toastHtml = `
+                <div id="${toastId}" class="toast" role="alert" aria-live="assertive" aria-atomic="true" data-bs-delay="5000">
+                    <div class="toast-header bg-${type} text-white">
+                        <i class="fas ${type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle'} me-2"></i>
+                        <strong class="me-auto">${title}</strong>
+                        <small>刚刚</small>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
+                    </div>
+                    <div class="toast-body">
+                        ${message}
+                    </div>
+                </div>
+            `;
+            toastContainer.insertAdjacentHTML('beforeend', toastHtml);
+            
+            const toastElement = document.getElementById(toastId);
+            const toast = new bootstrap.Toast(toastElement);
+            toast.show();
+            
+            toastElement.addEventListener('hidden.bs.toast', () => {
+                toastElement.remove();
+            });
         }
     </script>
 </body>

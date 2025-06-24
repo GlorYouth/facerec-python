@@ -1,11 +1,9 @@
 """
-人脸检测模块初始化文件
-提供人脸检测和识别功能
+人脸识别模块
 """
 
 from .face_recognizer import FaceRecognizer
-from .face_tracker import FaceTracker
 
-__all__ = ['FaceRecognizer', 'FaceTracker']
+__all__ = ['FaceRecognizer']
 
  

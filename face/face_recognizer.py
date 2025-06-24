@@ -139,7 +139,9 @@ class FaceRecognizer:
             self.haar_cascade = None
 
     def load_known_faces(self) -> None:
-        """加载已知人脸数据库"""
+        """
+        加载已知人脸数据库, 并在加载过程中自动清理无效的人脸图片和空的文件夹。
+        """
         self.known_face_encodings = []
         self.known_face_names = []
         
@@ -147,78 +149,148 @@ class FaceRecognizer:
             logging.warning(f"已知人脸目录不存在: {self.known_faces_dir}")
             return
             
-        logging.info(f"正在加载已知人脸数据库: {self.known_faces_dir}")
+        logging.info(f"正在加载已知人脸数据库 (带清理功能): {self.known_faces_dir}")
         
-        # 遍历人脸目录
-        for person_name in os.listdir(self.known_faces_dir):
+        # 使用 list() 来复制列表，因为我们可能会在循环中修改目录内容
+        for person_name in list(os.listdir(self.known_faces_dir)):
             person_dir = os.path.join(self.known_faces_dir, person_name)
             
             if not os.path.isdir(person_dir):
                 continue
-                
+
+            image_files = os.listdir(person_dir)
+            if not image_files:
+                logging.info(f"发现空的人脸目录，正在清理: {person_dir}")
+                try:
+                    os.rmdir(person_dir)
+                except OSError as e:
+                    logging.error(f"清理空目录 {person_dir} 失败: {e}")
+                continue
+
             # 遍历每个人的图片
-            for image_file in os.listdir(person_dir):
+            for image_file in list(image_files): # 同样使用副本迭代
                 image_path = os.path.join(person_dir, image_file)
                 
-                # 检查文件是否为图片
                 if not image_path.lower().endswith(('.jpg', '.jpeg', '.png')):
                     continue
                     
                 try:
-                    # 加载并编码人脸
                     face_image = face_recognition.load_image_file(image_path)
                     face_encodings = face_recognition.face_encodings(face_image)
                     
-                    # 如果检测到人脸，添加到数据库
                     if face_encodings:
                         self.known_face_encodings.append(face_encodings[0])
                         self.known_face_names.append(person_name)
                         logging.debug(f"已加载人脸: {person_name} ({image_file})")
                     else:
-                        logging.warning(f"未在图片中检测到人脸: {image_path}")
+                        logging.warning(f"图片中未检测到人脸，将自动清理: {image_path}")
+                        os.remove(image_path)
+
                 except Exception as e:
-                    logging.error(f"加载人脸失败 {image_path}: {e}")
+                    logging.error(f"加载人脸失败，将自动清理: {image_path} ({e})")
+                    try:
+                        os.remove(image_path)
+                    except OSError as remove_error:
+                        logging.error(f"清理失败的文件 {image_path} 失败: {remove_error}")
+
+            # 在处理完一个人的所有图片后，再次检查目录是否变空
+            try:
+                if not os.listdir(person_dir):
+                    logging.info(f"目录中所有图片均无效，清理空目录: {person_dir}")
+                    os.rmdir(person_dir)
+            except FileNotFoundError:
+                # 目录可能已经被初始检查删除了，这是正常情况
+                pass
+            except OSError as e:
+                logging.error(f"清理空目录 {person_dir} 失败: {e}")
+
+        logging.info(f"清理完成。已加载 {len(self.known_face_encodings)} 个有效已知人脸")
         
-        logging.info(f"已加载 {len(self.known_face_encodings)} 个已知人脸")
-        
-    def add_face(self, face_image: np.ndarray, person_name: str) -> bool:
+    def add_known_face_from_frame(self, frame: np.ndarray, person_name: str) -> bool:
         """
-        添加新的人脸到数据库
-        
-        Args:
-            face_image: 人脸图像
-            person_name: 人名
-            
-        Returns:
-            是否成功添加
+        以异步方式，从一个完整的图像帧中检测、裁剪并添加新的人脸到数据库。
         """
+        # 立即返回True，实际处理在后台进行
+        thread = threading.Thread(target=self._add_known_face_worker, args=(frame, person_name))
+        thread.daemon = True
+        thread.start()
+        return True
+
+    def _add_known_face_worker(self, frame: np.ndarray, person_name: str) -> None:
+        """
+        在后台线程中执行添加人脸的实际工作。
+        """
+        if not FACE_RECOGNITION_AVAILABLE:
+            logging.error("face_recognition 库不可用，无法添加人脸。")
+            return
+
         try:
-            # 检测人脸
-            face_locations = face_recognition.face_locations(face_image, model=self.model)
+            # 使用更精确的模型来定位人脸以进行保存
+            face_locations = face_recognition.face_locations(frame, model=self.model)
+            
             if not face_locations:
-                logging.error("未检测到人脸，无法添加")
-                return False
-                
+                logging.warning("在当前帧中未检测到人脸，无法添加。")
+                return
+
+            # 如果有多张人脸，选择最大的一张
+            largest_face_location = None
+            max_area = 0
+            for (top, right, bottom, left) in face_locations:
+                area = (bottom - top) * (right - left)
+                if area > max_area:
+                    max_area = area
+                    largest_face_location = (top, right, bottom, left)
+            
+            # 增加一个最小尺寸判断，避免保存过小的人脸
+            if max_area < 40*40: # 假设最小人脸为40x40像素
+                logging.warning(f"人脸尺寸过小 ({max_area}px)，无法添加。请离摄像头近一点。")
+                return
+
+            (top, right, bottom, left) = largest_face_location
+            face_image_crop = frame[top:bottom, left:right]
+
             # 创建人名目录
             person_dir = os.path.join(self.known_faces_dir, person_name)
             os.makedirs(person_dir, exist_ok=True)
             
-            # 生成文件名
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            image_filename = f"{person_name}_{timestamp}.jpg"
+            # 生成唯一文件名
+            image_filename = f"{person_name}_{uuid.uuid4().hex[:8]}.jpg"
             image_path = os.path.join(person_dir, image_filename)
             
-            # 保存图片
-            import cv2
-            cv2.imwrite(image_path, cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR))
+            # 保存裁剪出的人脸图片
+            Image.fromarray(face_image_crop).save(image_path)
             
-            # 重新加载人脸库
+            logging.info(f"成功保存新的人脸图像: {image_path}")
+            
+            # 立即重新加载人脸库，使新添加的人脸生效
             self.load_known_faces()
             
-            logging.info(f"已添加人脸: {person_name}")
+        except Exception as e:
+            logging.error(f"添加人脸时发生错误: {e}", exc_info=True)
+
+    def delete_known_face(self, person_name: str) -> bool:
+        """
+        从数据库中删除一个已知人脸（及其所有图片）。
+
+        :param person_name: 要删除的人名
+        :return: 是否成功删除
+        """
+        person_dir = os.path.join(self.known_faces_dir, person_name)
+        
+        if not os.path.exists(person_dir):
+            logging.warning(f"要删除的人脸目录不存在: {person_dir}")
+            return False
+            
+        try:
+            import shutil
+            shutil.rmtree(person_dir)
+            logging.info(f"已成功删除人脸目录: {person_dir}")
+            
+            # 立即重新加载人脸库
+            self.load_known_faces()
             return True
         except Exception as e:
-            logging.error(f"添加人脸失败: {e}")
+            logging.error(f"删除人脸 '{person_name}' 时出错: {e}", exc_info=True)
             return False
             
     def need_detection(self) -> bool:
@@ -248,191 +320,126 @@ class FaceRecognizer:
         """
         if not FACE_RECOGNITION_AVAILABLE or self.haar_cascade is None:
             return []
+
+        # 降采样以提高性能
+        small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+        gray_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+        
+        # 使用Haar Cascade检测人脸
+        face_locations = self.haar_cascade.detectMultiScale(
+            gray_frame,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30)
+        )
+        
+        # 将坐标转换回原始尺寸
+        face_locations_orig = []
+        for (x, y, w, h) in face_locations:
+            top, right, bottom, left = y * 2, (x + w) * 2, (y + h) * 2, x * 2
+            face_locations_orig.append((top, right, bottom, left))
             
-        with self.detection_lock:
-            # 使用 Haar Cascade 替换 HOG 进行快速检测
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            faces = self.haar_cascade.detectMultiScale(
-                gray_frame,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(60, 60),
-                flags=cv2.CASCADE_SCALE_IMAGE
-            )
-            
-            # 转换坐标格式从 (x, y, w, h) 到 (top, right, bottom, left)
-            face_locations = [(y, x + w, y + h, x) for (x, y, w, h) in faces]
-            return [(location, "") for location in face_locations]
-            
+        # 目前只检测，不识别，所以名字都是 "Unknown"
+        return [(loc, "Face") for loc in face_locations_orig]
+
     def recognize_faces(
         self, frame: np.ndarray
     ) -> List[Tuple[Tuple[int, int, int, int], str]]:
         """
-        识别图像中的人脸
+        检测并识别图像中的人脸
         
         Args:
             frame: 输入图像
             
         Returns:
-            识别结果列表，每个元素为 ((top, right, bottom, left), 人名) 形式
+            人脸位置和姓名列表
         """
-        if not FACE_RECOGNITION_AVAILABLE or not self.need_detection() or self.haar_cascade is None:
+        if not FACE_RECOGNITION_AVAILABLE or not self.known_face_encodings:
             return []
             
-        with self.detection_lock:
-            # 1. 使用 Haar Cascade 替换 HOG 进行快速人脸位置检测
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            faces = self.haar_cascade.detectMultiScale(
-                gray_frame,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(60, 60),
-                flags=cv2.CASCADE_SCALE_IMAGE
-            )
-            
-            # 转换坐标格式从 (x, y, w, h) 到 (top, right, bottom, left)
-            face_locations = [(y, x + w, y + h, x) for (x, y, w, h) in faces]
-            
-            if not face_locations:
-                return []
-                
-            # 2. 对检测到的人脸提取特征 (这一步仍然是计算密集型)
-            face_encodings = face_recognition.face_encodings(frame, face_locations)
-            
-            # 3. 进行人脸比对
-            results = []
-            for i, face_encoding in enumerate(face_encodings):
-                # 获取当前人脸的位置
-                face_location = face_locations[i]
-                
-                # 与已知人脸比较
-                matches = face_recognition.compare_faces(
-                    self.known_face_encodings, face_encoding, self.tolerance
-                )
-                name = "Unknown"
-                
-                # 如果找到匹配
-                if True in matches:
-                    first_match_index = matches.index(True)
-                    name = self.known_face_names[first_match_index]
-                else:
-                    # 处理未知人脸
-                    if self.save_unknown_faces:
-                        self._save_unknown_face(frame, face_location)
-                        
-                results.append((face_location, name))
-                
-            return results
-            
-    def _save_unknown_face(self, frame: np.ndarray, face_location: Tuple[int, int, int, int]) -> None:
-        """
-        保存未知人脸
+        # 将图像从BGR转换为RGB（face_recognition使用RGB）
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        Args:
-            frame: 原始图像
-            face_location: 人脸位置 (top, right, bottom, left)
-        """
+        # 检测所有人脸的位置和编码
+        face_locations = face_recognition.face_locations(rgb_frame)
+        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+        
+        face_results = []
+        for face_location, face_encoding in zip(face_locations, face_encodings):
+            matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, self.tolerance)
+            name = "Unknown"
+            
+            # 如果找到匹配项，使用第一个
+            if True in matches:
+                first_match_index = matches.index(True)
+                name = self.known_face_names[first_match_index]
+            elif self.save_unknown_faces:
+                # 异步保存未知人脸
+                self._save_unknown_face(frame, face_location)
+
+            face_results.append((face_location, name))
+            
+        return face_results
+
+    def _save_unknown_face(self, frame: np.ndarray, face_location: Tuple[int, int, int, int]) -> None:
+        """异步保存未知人脸的图像"""
+        if not self.file_writer:
+            return
+            
         try:
-            # 确保目录存在
-            os.makedirs(self.unknown_faces_dir, exist_ok=True)
-            
-            # 提取人脸区域
             top, right, bottom, left = face_location
-            # 扩大一点区域，确保包含整个人脸
-            top = max(0, top - 20)
-            bottom = min(frame.shape[0], bottom + 20)
-            left = max(0, left - 20)
-            right = min(frame.shape[1], right + 20)
-            
             face_image = frame[top:bottom, left:right]
             
-            # 生成文件名
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"unknown_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"unknown_{timestamp}.jpg"
             filepath = os.path.join(self.unknown_faces_dir, filename)
             
-            # 异步保存图片
-            if self.file_writer:
-                # 将图像从RGB转换为BGR以供cv2.imwrite使用
-                face_image_bgr = cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR)
-                self.file_writer.save(face_image_bgr, filepath)
-                logging.debug(f"已提交未知人脸保存任务: {filepath}")
-            else:
-                # 如果没有提供写入器，则同步回退
-                import cv2
-                cv2.imwrite(filepath, cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR))
-                logging.warning(f"文件写入器未提供，同步保存未知人脸: {filepath}")
-        except Exception as e:
-            logging.error(f"保存未知人脸任务提交失败: {e}")
+            # 使用File Writer进行异步保存
+            self.file_writer.save(face_image, filepath)
             
+        except Exception as e:
+            logging.error(f"保存未知人脸失败: {e}")
+
     def draw_faces(
         self, 
         frame: np.ndarray, 
         face_results: List[Tuple[Tuple[int, int, int, int], str]]
     ) -> np.ndarray:
         """
-        在图像上绘制人脸框和名字（优化版）
-        该方法通过仅在需要绘制文本的局部区域使用PIL，避免了对整个帧进行格式转换，从而提高性能。
+        在图像上绘制人脸框和姓名
         
         Args:
-            frame: 原始图像 (OpenCV BGR格式)
-            face_results: 人脸识别结果列表
+            frame: 输入图像
+            face_results: 人脸检测结果
             
         Returns:
-            绘制后的图像 (OpenCV BGR格式)
+            绘制了标记的图像
         """
-        try:
-            import cv2
+        # 使用Pillow进行绘制以支持中文
+        img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(img_pil)
+        
+        for (top, right, bottom, left), name in face_results:
+            # 绘制人脸框
+            draw.rectangle(((left, top), (right, bottom)), outline=(0, 255, 0), width=2)
             
-            # 如果没有加载字体或没有识别结果，直接返回原图
-            if self.font is None or not face_results:
-                return frame
-
-            # 绘制每个人脸
-            for (top, right, bottom, left), name in face_results:
-                # 1. 直接在OpenCV帧上绘制矩形框（非常快）
-                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+            # 准备绘制文本
+            try:
+                text_bbox = draw.textbbox((left, bottom), name, font=self.font)
+                text_width = text_bbox[2] - text_bbox[0]
+                text_height = text_bbox[3] - text_bbox[1]
                 
-                # 2. 准备文本和背景
-                text = name if name != "未知" else "Unknown"
+                # 创建文本背景
+                draw.rectangle(
+                    ((left, bottom - text_height - 5), (left + text_width + 5, bottom)),
+                    fill=(0, 255, 0)
+                )
                 
-                # 3. 使用PIL在内存中创建文本图像（只处理小尺寸的文本区域）
-                try:
-                    # 获取文本尺寸
-                    bbox = self.font.getbbox(text)
-                    text_width = bbox[2] - bbox[0]
-                    text_height = bbox[3] - bbox[1]
-                    
-                    # 创建文本背景PIL图像
-                    text_bg_pil = Image.new("RGB", (text_width + 4, text_height + 4), (0, 255, 0))
-                    draw = ImageDraw.Draw(text_bg_pil)
-                    # 在PIL图像上绘制白色文本
-                    draw.text((2, 2), text, font=self.font, fill=(255, 255, 255))
-                    
-                    # 4. 将PIL文本图像转换回OpenCV格式
-                    text_bg_cv = cv2.cvtColor(np.array(text_bg_pil), cv2.COLOR_RGB2BGR)
-                    
-                    # 5. 计算文本在主图像上的粘贴位置
-                    y1 = bottom
-                    y2 = bottom + text_bg_cv.shape[0]
-                    x1 = left
-                    x2 = left + text_bg_cv.shape[1]
-                    
-                    # 确保粘贴区域不超出主图像边界
-                    if y2 > frame.shape[0]:
-                        y2 = frame.shape[0]
-                        text_bg_cv = text_bg_cv[:y2-y1, :]
-                    if x2 > frame.shape[1]:
-                        x2 = frame.shape[1]
-                        text_bg_cv = text_bg_cv[:, :x2-x1]
-
-                    # 6. 将文本图像"粘贴"到主图像上
-                    frame[y1:y2, x1:x2] = text_bg_cv
-
-                except Exception as e:
-                    logging.error(f"绘制文本 '{text}' 失败: {e}")
-            
-        except Exception as e:
-            logging.error(f"绘制人脸框失败: {e}")
-            
-        return frame 
+                # 绘制文本
+                draw.text((left + 2, bottom - text_height - 3), name, font=self.font, fill=(255, 255, 255))
+            except Exception:
+                # Pillow绘制失败时回退到OpenCV
+                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 255, 0), cv2.FILLED)
+                cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 1.0, (255, 255, 255), 1)
+        
+        return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
