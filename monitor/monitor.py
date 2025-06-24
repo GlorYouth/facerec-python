@@ -51,6 +51,9 @@ class FaceMonitor:
     def _init_components(self) -> None:
         """初始化监控所需的组件"""
         try:
+            # 加载字体
+            self._load_font()
+
             # 创建摄像头
             camera_type = self.config.get('camera.type', 'picamera2')
             camera_config = self.config.get('camera', {})
@@ -79,11 +82,10 @@ class FaceMonitor:
                 detection_fps=fr_config.get('detection_fps', 5),
                 save_unknown_faces=fr_config.get('save_unknown_faces', True),
                 unknown_faces_dir=fr_config.get('unknown_faces_dir', './data/unknown_faces'),
-                file_writer=self.file_writer
+                file_writer=self.file_writer,
+                font=self.font
             )
             
-            # 加载字体
-            self._load_font()
         except Exception as e:
             logging.error(f"初始化监控组件失败: {e}", exc_info=True)
 

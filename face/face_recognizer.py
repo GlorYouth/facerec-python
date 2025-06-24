@@ -34,7 +34,8 @@ class FaceRecognizer:
         detection_fps: int = 5,
         save_unknown_faces: bool = True,
         unknown_faces_dir: str = None,
-        file_writer: Optional[FileWriter] = None
+        file_writer: Optional[FileWriter] = None,
+        font: Optional[Any] = None
     ):
         """
         初始化人脸识别器
@@ -47,6 +48,7 @@ class FaceRecognizer:
             save_unknown_faces: 是否保存未知人脸
             unknown_faces_dir: 未知人脸保存目录
             file_writer: 异步文件写入器实例
+            font: 用于绘制文本的字体对象
         """
         self.known_faces_dir = known_faces_dir
         self.model = model
@@ -67,7 +69,7 @@ class FaceRecognizer:
         self.last_detection_time = 0
         
         # 字体
-        self.font = None
+        self.font = font
         
         # Haar-cascade 分类器
         self.haar_cascade = None
@@ -87,33 +89,18 @@ class FaceRecognizer:
         # 加载已知人脸
         self.load_known_faces()
         
-        # 加载字体
-        self._load_font()
+        # 如果外部没有提供字体，则尝试加载一个默认的
+        if self.font is None:
+            self._load_default_font()
         
-    def _load_font(self, size: int = 20) -> None:
-        """加载用于绘制文本的字体文件"""
-        font_paths = [
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # 文泉驿微米黑
-            "C:/Windows/Fonts/msyh.ttc",                      # 微软雅黑 (Windows)
-            "/System/Library/Fonts/STHeitiLight.ttc",          # 黑体-简 (macOS)
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # DejaVu Sans
-            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",    # 文泉驿正黑
-            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"  # Droid Sans
-        ]
-        
-        for font_path in font_paths:
-            try:
-                if os.path.exists(font_path):
-                    self.font = ImageFont.truetype(font_path, size)
-                    logging.debug(f"使用字体: {font_path}")
-                    return
-            except Exception as e:
-                logging.warning(f"加载字体 {font_path} 失败: {e}")
-                continue
-        
-        # 如果所有字体都加载失败，使用默认字体
-        logging.warning("所有推荐字体加载失败，使用默认字体")
-        self.font = ImageFont.load_default()
+    def _load_default_font(self) -> None:
+        """加载一个备用/默认字体"""
+        try:
+            self.font = ImageFont.load_default()
+            logging.info("未提供外部字体，已加载Pillow默认字体。")
+        except Exception as e:
+            logging.error(f"加载Pillow默认字体失败: {e}")
+            self.font = None
 
     def _load_haar_cascade(self) -> None:
         """加载 OpenCV Haar 级联分类器模型"""
@@ -346,7 +333,8 @@ class FaceRecognizer:
         self, frame: np.ndarray
     ) -> List[Tuple[Tuple[int, int, int, int], str]]:
         """
-        检测并识别图像中的人脸
+        检测并识别图像中的人脸。
+        即使没有已知人脸，也会检测人脸并标记为 'Unknown'。
         
         Args:
             frame: 输入图像
@@ -354,14 +342,31 @@ class FaceRecognizer:
         Returns:
             人脸位置和姓名列表
         """
-        if not FACE_RECOGNITION_AVAILABLE or not self.known_face_encodings:
+        if not FACE_RECOGNITION_AVAILABLE:
             return []
-            
+
         # 将图像从BGR转换为RGB（face_recognition使用RGB）
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # 检测所有人脸的位置和编码
+        # 1. 总是先检测人脸位置
         face_locations = face_recognition.face_locations(rgb_frame)
+        
+        # 如果没有检测到人脸，直接返回
+        if not face_locations:
+            return []
+
+        # 2. 如果没有已知人脸可供比对，将所有检测到的人脸标记为 "Unknown"
+        if not self.known_face_encodings:
+            face_results = []
+            for face_location in face_locations:
+                name = "Unknown"
+                face_results.append((face_location, name))
+                # 即使没有已知人脸，也可以选择保存未知人脸
+                if self.save_unknown_faces:
+                    self._save_unknown_face(frame, face_location)
+            return face_results
+
+        # 3. 如果有已知人脸，则进行识别
         face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
         
         face_results = []
